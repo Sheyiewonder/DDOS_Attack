@@ -149,7 +149,7 @@ test_num = np.array(X_test_num)
 history = model.fit(
     train_cat + [train_num], y_train,
     validation_data=(test_cat + [test_num], y_test),
-    epochs=100,
+    epochs=50,
     batch_size=32
 )
 
