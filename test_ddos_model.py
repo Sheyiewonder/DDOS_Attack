@@ -1,14 +1,32 @@
 import pandas as pd
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.models import load_model
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+import pickle
+import os
 from sklearn.metrics import classification_report
 
 # =========================
-# 1. Load and merge test datasets
+# 1. Load saved preprocessing artifacts
 # =========================
-files = [
+with open("encoders/categorical_encoders.pkl", "rb") as f:
+    cat_encoders = pickle.load(f)
+
+with open("encoders/label_encoder.pkl", "rb") as f:
+    le_label = pickle.load(f)
+
+with open("encoders/categorical_cols.pkl", "rb") as f:
+    categorical_cols = pickle.load(f)
+
+with open("encoders/numeric_cols.pkl", "rb") as f:
+    numeric_cols = pickle.load(f)
+
+with open("encoders/scaler.pkl", "rb") as f:
+    scaler = pickle.load(f)
+
+# =========================
+# 2. Load test dataset
+# =========================
+test_files = [
     "Datasets/Test Dataset/UDPLag_data_2_0.csv",
     "Datasets/Test Dataset/Syn.csv",
     "Datasets/Test Dataset/DrDoS_NTP_data_data_5.csv",
@@ -16,61 +34,62 @@ files = [
 ]
 
 dfs = []
-for file in files:
+for file in test_files:
     df = pd.read_csv(file)
     df.columns = df.columns.str.strip()
-    if "Label" not in df.columns:
-        raise ValueError(f"'Label' column missing in {file}. Found: {df.columns.tolist()}")
     dfs.append(df)
 
-data = pd.concat(dfs, ignore_index=True)
-data = data.sample(frac=1, random_state=42).reset_index(drop=True)
+test_df = pd.concat(dfs, ignore_index=True)
 
 label_col = "Label"
 
 # =========================
-# 2. Separate categorical & numeric features
+# 3. Encode categorical features (handle unseen values safely)
 # =========================
-categorical_cols = data.select_dtypes(exclude=["number"]).columns.tolist()
-categorical_cols.remove(label_col) if label_col in categorical_cols else None
-numeric_cols = data.select_dtypes(include=["number"]).columns.tolist()
-
-# Encode categorical features
 for col in categorical_cols:
-    le_cat = LabelEncoder()
-    data[col] = le_cat.fit_transform(data[col].astype(str))
-
-# Encode labels
-le_label = LabelEncoder()
-data[label_col] = le_label.fit_transform(data[label_col])
-
-# =========================
-# 2.1 Handle inf / NaN in numeric columns
-# =========================
-data[numeric_cols] = data[numeric_cols].replace([np.inf, -np.inf], np.nan)
-data[numeric_cols] = data[numeric_cols].fillna(data[numeric_cols].median())
-data[numeric_cols] = np.clip(data[numeric_cols], -1e9, 1e9)
+    if col not in test_df.columns:
+        raise ValueError(f"Missing column {col} in test set")
+    test_df[col] = test_df[col].astype(str)
+    le_cat = cat_encoders[col]
+    # Handle unseen labels by mapping them to a default category
+    test_df[col] = test_df[col].map(lambda x: x if x in le_cat.classes_ else le_cat.classes_[0])
+    test_df[col] = le_cat.transform(test_df[col])
 
 # =========================
-# 3. Scale numeric features
+# 4. Encode labels
 # =========================
-scaler = StandardScaler()
-X_num = scaler.fit_transform(data[numeric_cols])
+if label_col in test_df.columns:
+    test_df[label_col] = le_label.transform(test_df[label_col])
 
 # =========================
-# 4. Prepare model inputs
+# 5. Prepare numeric features
 # =========================
-X_cat = [np.array(data[col]) for col in categorical_cols]
-X_num = np.array(X_num)
-y_true = data[label_col]
+for col in numeric_cols:
+    if col not in test_df.columns:
+        raise ValueError(f"Missing numeric column {col} in test set")
+
+test_df[numeric_cols] = test_df[numeric_cols].replace([np.inf, -np.inf], np.nan)
+test_df[numeric_cols] = test_df[numeric_cols].fillna(test_df[numeric_cols].median())
+test_df[numeric_cols] = np.clip(test_df[numeric_cols], -1e9, 1e9)
+test_num = scaler.transform(test_df[numeric_cols])
 
 # =========================
-# 5. Load model and evaluate
+# 6. Load model
 # =========================
-model = load_model("ddosAttackDetection.h5")
+model = tf.keras.models.load_model("ddosAttackDetection.keras")
 
-loss, acc = model.evaluate(X_cat + [X_num], y_true)
+# =========================
+# 7. Prepare inputs for model
+# =========================
+cat_inputs = [np.array(test_df[col]) for col in categorical_cols]
+num_input = np.array(test_num)
+
+# =========================
+# 8. Evaluate
+# =========================
+y_true = test_df[label_col]
+y_pred = np.argmax(model.predict(cat_inputs + [num_input]), axis=1)
+
+acc = (y_pred == y_true).mean()
 print(f"Test Accuracy: {acc:.4f}")
-
-y_pred = np.argmax(model.predict(X_cat + [X_num]), axis=1)
 print(classification_report(y_true, y_pred, target_names=le_label.classes_, zero_division=0))

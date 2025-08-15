@@ -6,6 +6,8 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 from tensorflow.keras.layers import Embedding, Flatten, Concatenate
+import pickle
+import os
 
 # =========================
 # 1. Load and merge datasets
@@ -34,18 +36,38 @@ label_col = "Label"
 # 2. Separate categorical & numeric features
 # =========================
 categorical_cols = data.select_dtypes(exclude=["number"]).columns.tolist()
-categorical_cols.remove(label_col) if label_col in categorical_cols else None
+if label_col in categorical_cols:
+    categorical_cols.remove(label_col)
 numeric_cols = data.select_dtypes(include=["number"]).columns.tolist()
 
-# Encode categorical features
+# =========================
+# 2.1 Encode categorical features with saved encoders
+# =========================
+cat_encoders = {}
 for col in categorical_cols:
     le_cat = LabelEncoder()
     data[col] = le_cat.fit_transform(data[col].astype(str))
+    cat_encoders[col] = le_cat  # store encoder for later use
 
 # Encode labels
 le_label = LabelEncoder()
 data[label_col] = le_label.fit_transform(data[label_col])
 
+# Save encoders and column lists
+os.makedirs("encoders", exist_ok=True)
+
+with open("encoders/categorical_encoders.pkl", "wb") as f:
+    pickle.dump(cat_encoders, f)
+
+with open("encoders/label_encoder.pkl", "wb") as f:
+    pickle.dump(le_label, f)
+
+with open("encoders/categorical_cols.pkl", "wb") as f:
+    pickle.dump(categorical_cols, f)
+
+with open("encoders/numeric_cols.pkl", "wb") as f:
+    pickle.dump(numeric_cols, f)
+    
 # Stratification check before split
 print("\nClass distribution in full dataset:")
 print(data[label_col].value_counts(normalize=True))
@@ -64,7 +86,7 @@ print("\nClass distribution in TEST:")
 print(pd.Series(y_test).value_counts(normalize=True))
 
 # =========================
-# 2.1 Handle inf / NaN in numeric columns
+# 2.2 Handle inf / NaN in numeric columns
 # =========================
 for df_part in [X_train, X_test]:
     df_part[numeric_cols] = df_part[numeric_cols].replace([np.inf, -np.inf], np.nan)
@@ -72,11 +94,14 @@ for df_part in [X_train, X_test]:
     df_part[numeric_cols] = np.clip(df_part[numeric_cols], -1e9, 1e9)  # prevent extreme values
 
 # =========================
-# 3. Scale numeric features
+# 3. Scale numeric features (save scaler)
 # =========================
 scaler = StandardScaler()
 X_train_num = scaler.fit_transform(X_train[numeric_cols])
 X_test_num = scaler.transform(X_test[numeric_cols])
+
+with open("encoders/scaler.pkl", "wb") as f:
+    pickle.dump(scaler, f)
 
 # =========================
 # 4. Build TabTransformer-style model
@@ -154,12 +179,13 @@ history = model.fit(
 )
 
 # =========================
-# 6. Evaluate
+# 6. Save model & preprocessing objects
 # =========================
-model.save("ddosAttackDetection.h5")
+model.save("ddosAttackDetection.keras")
+print("Model and preprocessing objects saved successfully.")
 
 # =========================
-# 6. Evaluate
+# 7. Evaluate
 # =========================
 loss, acc = model.evaluate(test_cat + [test_num], y_test)
 print(f"Test Accuracy: {acc:.4f}")
